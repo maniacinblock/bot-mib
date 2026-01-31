@@ -24,6 +24,10 @@ export default async function handler(req, res) {
         { name: 'min', description: 'Minimal', type: 4, required: true },
         { name: 'max', description: 'Maksimal', type: 4, required: true }
       ]
+    },
+    {
+      name: 'ping_bot',
+      description: 'Cek apakah bot hidup (Tanpa Database)'
     }
   ];
 
