@@ -1,14 +1,12 @@
 import { InteractionResponseType, InteractionType, verifyKey } from 'discord-interactions';
 import admin from 'firebase-admin';
 
-// --- PENTING: Matikan Auto-Parser Vercel agar Signature Discord valid ---
 export const config = {
   api: {
     bodyParser: false,
   },
 };
 
-// Fungsi bantu untuk membaca Raw Body (Wajib untuk verifikasi Discord)
 async function getRawBody(req) {
   const chunks = [];
   for await (const chunk of req) {
@@ -18,17 +16,13 @@ async function getRawBody(req) {
 }
 
 export default async function handler(req, res) {
-  // Hanya terima POST
   if (req.method !== 'POST') {
     return res.status(405).send('Method Not Allowed');
   }
 
-  // --- 1. VERIFIKASI KEAMANAN (VERSI NODE.JS) ---
-  // Perbaikan: Pakai kurung siku [], bukan .get()
+  // --- 1. VERIFIKASI DISCORD ---
   const signature = req.headers['x-signature-ed25519'];
   const timestamp = req.headers['x-signature-timestamp'];
-  
-  // Baca body manual
   const rawBodyBuffer = await getRawBody(req);
   const rawBodyString = rawBodyBuffer.toString('utf-8');
 
@@ -45,34 +39,54 @@ export default async function handler(req, res) {
 
   const message = JSON.parse(rawBodyString);
 
-  // --- 2. HANDLE PING (PENTING BUAT SAVE URL) ---
+  // --- 2. HANDLE PING ---
   if (message.type === InteractionType.PING) {
     return res.status(200).json({ type: InteractionResponseType.PONG });
   }
 
-  // --- 3. INIT FIREBASE (ANTI CRASH) ---
-  if (!admin.apps.length) {
-    try {
-      const cleanJson = process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n');
+  // --- 3. INIT FIREBASE DENGAN REPORTING ---
+  let db;
+  let firebaseError = null;
+
+  try {
+    if (!admin.apps.length) {
+      // Membersihkan format JSON yang sering rusak saat di-copy
+      const cleanJson = process.env.FIREBASE_SERVICE_ACCOUNT
+          .replace(/\\n/g, '\n'); // Ganti \n string jadi enter beneran
+      
       const serviceAccount = JSON.parse(cleanJson);
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
       });
-    } catch (e) {
-      console.error("🔥 Firebase Init Error:", e);
-      // Jangan return error 500 disini, biarkan lanjut agar Discord tidak timeout
-      // Nanti errornya muncul pas command dijalankan saja
     }
+    db = admin.firestore();
+  } catch (e) {
+    console.error("🔥 Firebase Error:", e);
+    firebaseError = e.message;
   }
-  
-  const db = admin.firestore();
 
   // --- 4. HANDLE COMMANDS ---
   if (message.type === InteractionType.APPLICATION_COMMAND) {
+    // Jika Firebase Error, langsung lapor ke Discord
+    if (firebaseError) {
+        return res.status(200).json({
+            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+            data: { content: `⚠️ **Sistem Error:** Gagal konek database.\nLog: \`${firebaseError}\`\n\n*Cek Variable FIREBASE_SERVICE_ACCOUNT di Vercel.*` }
+        });
+    }
+
     const { name, options } = message.data;
 
     try {
-        // Command: DAFTAR
+        // --- COMMAND: TEST PING (Tanpa DB) ---
+        if (name === 'ping_bot') {
+            return res.status(200).json({
+                type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                data: { content: '🏓 **Pong!** Bot hidup dan siap melayani.' }
+            });
+        }
+
+        // --- COMMAND: DAFTAR ---
         if (name === 'daftar') {
           const nama = options.find(o => o.name === 'nama_panggilan').value;
           const roblox = options.find(o => o.name === 'username_roblox').value.replace('@', '');
@@ -91,7 +105,7 @@ export default async function handler(req, res) {
           });
         }
 
-        // Command: LIST PESERTA
+        // --- COMMAND: LIST PESERTA ---
         if (name === 'list_peserta') {
           const snap = await db.collection('vd_participants').orderBy('timestamp').get();
           
@@ -114,7 +128,7 @@ export default async function handler(req, res) {
           });
         }
 
-        // Command: BUAT TIM
+        // --- COMMAND: BUAT TIM ---
         if (name === 'buat_tim') {
            const configSnap = await db.collection('vd_settings').doc('config').get();
            const min = configSnap.exists ? configSnap.data().minTeam : 4;
@@ -136,7 +150,6 @@ export default async function handler(req, res) {
                [players[i], players[j]] = [players[j], players[i]];
            }
 
-           // Bagi Tim
            let teams = [];
            let current = [];
            players.forEach(p => {
@@ -160,22 +173,10 @@ export default async function handler(req, res) {
            });
         }
 
-        // Command: ATUR TIM
-        if (name === 'atur_tim') {
-            const min = options.find(o => o.name === 'min').value;
-            const max = options.find(o => o.name === 'max').value;
-            await db.collection('vd_settings').doc('config').set({ minTeam: min, maxTeam: max });
-            return res.status(200).json({
-               type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-               data: { content: `⚙️ Setting diupdate: Min ${min}, Max ${max}.` }
-            });
-        }
-
     } catch (err) {
-        console.error("Command Error:", err);
         return res.status(200).json({
             type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            data: { content: `❌ Terjadi error: ${err.message}` }
+            data: { content: `❌ **Error Logic:** ${err.message}` }
         });
     }
   }
