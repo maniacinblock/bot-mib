@@ -2,33 +2,13 @@
 import { InteractionResponseType, InteractionType, verifyKey } from 'discord-interactions';
 import admin from 'firebase-admin';
 
-// --- SETUP FIREBASE (Serverless Mode) ---
-if (!admin.apps.length) {
-  try {
-    const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-    admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount)
-    });
-  } catch (e) {
-    console.error("Firebase Error:", e);
-  }
-}
-const db = admin.firestore();
-
-// --- UTILS ---
-function jsonResponse(obj) {
-  return new Response(JSON.stringify(obj), {
-    headers: { 'Content-Type': 'application/json' },
-  });
-}
-
-// --- MAIN HANDLER VERCEL ---
 export default async function handler(req) {
-  // 1. Verifikasi Keamanan (Wajib di Vercel)
+  // --- 1. VERIFIKASI KEAMANAN (WAJIB JALAN DULUAN) ---
   const signature = req.headers.get('x-signature-ed25519');
   const timestamp = req.headers.get('x-signature-timestamp');
   const rawBody = await req.text();
 
+  // Pastikan request dari Discord asli
   const isValidRequest = verifyKey(
     rawBody,
     signature,
@@ -42,16 +22,38 @@ export default async function handler(req) {
 
   const message = JSON.parse(rawBody);
 
-  // 2. Handle PING dari Discord (Wajib)
+  // --- 2. HANDLE PING (INI YANG MEMBUAT SAVE URL BERHASIL) ---
+  // Kita balas PONG dulu sebelum menyentuh Firebase
   if (message.type === InteractionType.PING) {
-    return jsonResponse({ type: InteractionResponseType.PONG });
+    return new Response(JSON.stringify({ type: InteractionResponseType.PONG }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
   }
 
-  // 3. Handle COMMANDS
+  // --- 3. BARU INIT FIREBASE (SETELAH PING SELESAI) ---
+  // Jadi kalau firebase error, bot tidak crash saat verifikasi URL
+  if (!admin.apps.length) {
+    try {
+      // Membersihkan format JSON dari spasi/enter aneh (Penyebab umum error)
+      const cleanJson = process.env.FIREBASE_SERVICE_ACCOUNT.replace(/\\n/g, '\n');
+      const serviceAccount = JSON.parse(cleanJson);
+      
+      admin.initializeApp({
+        credential: admin.credential.cert(serviceAccount)
+      });
+    } catch (e) {
+      console.error("🔥 FIREBASE ERROR (Cek Env Variable):", e);
+      return new Response('Internal Server Error: Database Config', { status: 500 });
+    }
+  }
+  
+  const db = admin.firestore();
+
+  // --- 4. HANDLE COMMANDS ---
   if (message.type === InteractionType.APPLICATION_COMMAND) {
     const { name, options } = message.data;
 
-    // --- COMMAND: DAFTAR ---
+    // Command: DAFTAR
     if (name === 'daftar') {
       const nama = options.find(o => o.name === 'nama_panggilan').value;
       const roblox = options.find(o => o.name === 'username_roblox').value.replace('@', '');
@@ -64,40 +66,36 @@ export default async function handler(req) {
         timestamp: admin.firestore.FieldValue.serverTimestamp()
       });
 
-      return jsonResponse({
+      return new Response(JSON.stringify({
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
         data: { content: `✅ **Berhasil Daftar!**\nNama: ${nama}\nRoblox: @${roblox}` }
-      });
+      }), { headers: { 'Content-Type': 'application/json' } });
     }
 
-    // --- COMMAND: LIST PESERTA ---
+    // Command: LIST PESERTA
     if (name === 'list_peserta') {
       const snap = await db.collection('vd_participants').orderBy('timestamp').get();
-      
       if (snap.empty) {
-        return jsonResponse({
+        return new Response(JSON.stringify({
           type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
           data: { content: '*Belum ada peserta.*' }
-        });
+        }), { headers: { 'Content-Type': 'application/json' } });
       }
-
+      
       let listText = snap.docs.map((d, i) => {
           const data = d.data();
           const num = (i + 1).toString().padStart(2, '0');
           return `${num}. [${data.nama}] [@${data.robloxUsername}]`;
       }).join('\n');
 
-      return jsonResponse({
+      return new Response(JSON.stringify({
         type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-        data: {
-            content: `**📋 LIST PESERTA (${snap.size})**\n\`\`\`ini\n${listText}\n\`\`\``
-        }
-      });
+        data: { content: `**📋 LIST PESERTA (${snap.size})**\n\`\`\`ini\n${listText}\n\`\`\`` }
+      }), { headers: { 'Content-Type': 'application/json' } });
     }
 
-    // --- COMMAND: BUAT TIM (REROLL) ---
+    // Command: BUAT TIM
     if (name === 'buat_tim') {
-       // Ambil data
        const configSnap = await db.collection('vd_settings').doc('config').get();
        const min = configSnap.exists ? configSnap.data().minTeam : 4;
        const max = configSnap.exists ? configSnap.data().maxTeam : 6;
@@ -106,10 +104,10 @@ export default async function handler(req) {
        let players = snap.docs.map(d => d.data());
 
        if (players.length < min) {
-           return jsonResponse({
+           return new Response(JSON.stringify({
                type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
                data: { content: `❌ Peserta kurang (Min: ${min}).` }
-           });
+           }), { headers: { 'Content-Type': 'application/json' } });
        }
 
        // Shuffle
@@ -130,32 +128,16 @@ export default async function handler(req) {
        });
        if (current.length > 0) teams.push(current);
 
-       // Format Text Output (Embeds susah di raw json, kita pakai text formatted aja biar aman di Vercel)
        let output = `**🎲 HASIL REROLL TIM**\n`;
        teams.forEach((t, i) => {
            const members = t.map(p => `• ${p.nama} (@${p.robloxUsername})`).join('\n');
            output += `\n**Tim #${i+1} (${t.length} Orang)**\n\`\`\`\n${members}\n\`\`\``;
        });
 
-       return jsonResponse({
+       return new Response(JSON.stringify({
            type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
            data: { content: output }
-       });
-    }
-    
-    // --- COMMAND: ATUR TIM ---
-    if (name === 'atur_tim') {
-        // Cek Admin manual karena req.member.permissions itu bitfield (rumit), kita bypass dulu logic permission sederhana
-        // Disarankan set permission di Discord Server Settings > Integrations saja biar aman.
-        const min = options.find(o => o.name === 'min').value;
-        const max = options.find(o => o.name === 'max').value;
-        
-        await db.collection('vd_settings').doc('config').set({ minTeam: min, maxTeam: max });
-        
-        return jsonResponse({
-           type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-           data: { content: `⚙️ Setting diupdate: Min ${min}, Max ${max}.` }
-        });
+       }), { headers: { 'Content-Type': 'application/json' } });
     }
   }
 
