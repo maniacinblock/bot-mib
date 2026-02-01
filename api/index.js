@@ -44,17 +44,15 @@ export default async function handler(req, res) {
     return res.status(200).json({ type: InteractionResponseType.PONG });
   }
 
-  // --- 3. INIT FIREBASE DENGAN REPORTING ---
+  // --- 3. INIT FIREBASE ---
   let db;
   let firebaseError = null;
 
   try {
     if (!admin.apps.length) {
-      // Membersihkan format JSON yang sering rusak saat di-copy
-      const cleanJson = process.env.FIREBASE_SERVICE_ACCOUNT
-          .replace(/\\n/g, '\n'); // Ganti \n string jadi enter beneran
+      // Langsung parse saja, karena format JSON di Vercel sudah benar
+      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
       
-      const serviceAccount = JSON.parse(cleanJson);
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount)
       });
