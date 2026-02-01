@@ -8,8 +8,7 @@ export const config = {
 };
 
 // --- KONFIGURASI TAMPILAN ---
-const THEME_COLOR = 0x2B2D31; // Warna Dark Minimalis (ala Discord)
-// const THEME_COLOR = 0x8B0000; // Opsi lain: Merah Gelap (Violence)
+const THEME_COLOR = 0x2B2D31; // Warna Dark Minimalis
 
 async function getRawBody(req) {
   const chunks = [];
@@ -76,13 +75,25 @@ export default async function handler(req, res) {
             });
         }
 
-        // --- COMMAND: DAFTAR (Anti-Duplikat + Tampilan Baru) ---
+        // --- COMMAND: DAFTAR (FIX: BISA BACA NAMA LAMA & BARU) ---
         if (name === 'daftar') {
-          // Ambil data (nama sudah diganti di setup.js)
-          const namaInput = options.find(o => o.name === 'nama').value;
-          const robloxInput = options.find(o => o.name === 'username_roblox').value.replace('@', '');
+          // LOGIKA ANTI-ERROR: Cari 'nama' ATAU 'nama_panggilan'
+          // Jadi kalau Discord masih kirim 'nama_panggilan', bot tetap paham.
+          const namaOption = options.find(o => o.name === 'nama' || o.name === 'nama_panggilan');
+          const robloxOption = options.find(o => o.name === 'username_roblox');
 
-          // Simpan ke DB (Pakai .set agar menimpa data lama = Anti Duplikat)
+          // Cek jika data entah kenapa kosong
+          if (!namaOption || !robloxOption) {
+             return res.status(200).json({
+                type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+                data: { content: `⚠️ **Gagal Membaca Data.** Mohon tunggu sebentar lalu coba lagi.` }
+             });
+          }
+
+          const namaInput = namaOption.value;
+          const robloxInput = robloxOption.value.replace('@', '');
+
+          // Simpan ke DB (Anti Duplikat: Update data user yang sama)
           await db.collection('vd_participants').doc(user.id).set({
             discordId: user.id,
             nama: namaInput,
@@ -99,7 +110,7 @@ export default async function handler(req, res) {
                     title: "PENDAFTARAN BERHASIL",
                     description: "Data kamu telah diperbarui di database.",
                     color: THEME_COLOR,
-                    thumbnail: { url: `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png` },
+                    thumbnail: { url: user.avatar ? `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png` : null },
                     fields: [
                         { name: "Nama", value: `\`${namaInput}\``, inline: true },
                         { name: "Roblox", value: `\`@${robloxInput}\``, inline: true }
@@ -110,7 +121,7 @@ export default async function handler(req, res) {
           });
         }
 
-        // --- COMMAND: LIST PESERTA (Tampilan Modern Table) ---
+        // --- COMMAND: LIST PESERTA ---
         if (name === 'list_peserta') {
           const snap = await db.collection('vd_participants').orderBy('timestamp').get();
           
@@ -121,18 +132,14 @@ export default async function handler(req, res) {
             });
           }
           
-          // Format Tabel Rapi pakai Code Block
-          // Header
           let table = "NO  NAMA            ROBLOX\n";
           table += "--  --------------  --------------\n";
           
           snap.docs.forEach((doc, index) => {
               const d = doc.data();
-              const no = (index + 1).toString().padStart(2, '0'); // 01, 02
-              // Potong nama kalau kepanjangan biar tabel rapi
+              const no = (index + 1).toString().padStart(2, '0');
               const nama = d.nama.padEnd(14, ' ').substring(0, 14); 
               const rblx = ("@" + d.robloxUsername).substring(0, 14);
-              
               table += `${no}  ${nama}  ${rblx}\n`;
           });
 
@@ -141,7 +148,7 @@ export default async function handler(req, res) {
             data: {
                 embeds: [{
                     title: `DAFTAR PESERTA (${snap.size})`,
-                    description: `\`\`\`js\n${table}\n\`\`\``, // JS highlighting bikin warna abu/orange minimalis
+                    description: `\`\`\`js\n${table}\n\`\`\``,
                     color: THEME_COLOR,
                     footer: { text: "Menunggu peserta lain..." }
                 }]
@@ -149,7 +156,7 @@ export default async function handler(req, res) {
           });
         }
 
-        // --- COMMAND: BUAT TIM (Tampilan Grid) ---
+        // --- COMMAND: BUAT TIM ---
         if (name === 'buat_tim') {
            const configSnap = await db.collection('vd_settings').doc('config').get();
            const min = configSnap.exists ? configSnap.data().minTeam : 4;
@@ -171,7 +178,6 @@ export default async function handler(req, res) {
                [players[i], players[j]] = [players[j], players[i]];
            }
 
-           // Logic Pembagian Tim
            let teams = [];
            let current = [];
            players.forEach(p => {
@@ -183,7 +189,6 @@ export default async function handler(req, res) {
            });
            if (current.length > 0) teams.push(current);
 
-           // Build Embed Fields
            const fields = teams.map((t, i) => {
                const list = t.map(p => `• ${p.nama}`).join('\n');
                return {
@@ -199,9 +204,8 @@ export default async function handler(req, res) {
                    embeds: [{
                        title: "🎲 HASIL PEMBAGIAN TIM",
                        description: `Total: ${players.length} Peserta | Mode: ${min}-${max} Player`,
-                       color: 0x5865F2, // Warna Blurple (Menonjol)
-                       fields: fields,
-                       timestamp: newDxate().toISOString()
+                       color: 0x5865F2,
+                       fields: fields
                    }]
                }
            });
@@ -233,6 +237,7 @@ export default async function handler(req, res) {
         }
 
     } catch (err) {
+        console.error(err);
         return res.status(200).json({
             type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
             data: { content: `❌ Error: ${err.message}` }
