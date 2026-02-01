@@ -7,6 +7,10 @@ export const config = {
   },
 };
 
+// --- KONFIGURASI TAMPILAN ---
+const THEME_COLOR = 0x2B2D31; // Warna Dark Minimalis (ala Discord)
+// const THEME_COLOR = 0x8B0000; // Opsi lain: Merah Gelap (Violence)
+
 async function getRawBody(req) {
   const chunks = [];
   for await (const chunk of req) {
@@ -16,117 +20,136 @@ async function getRawBody(req) {
 }
 
 export default async function handler(req, res) {
-  if (req.method !== 'POST') {
-    return res.status(405).send('Method Not Allowed');
-  }
+  if (req.method !== 'POST') return res.status(405).send('Method Not Allowed');
 
-  // --- 1. VERIFIKASI DISCORD ---
+  // 1. Verifikasi Signature
   const signature = req.headers['x-signature-ed25519'];
   const timestamp = req.headers['x-signature-timestamp'];
   const rawBodyBuffer = await getRawBody(req);
   const rawBodyString = rawBodyBuffer.toString('utf-8');
 
   const isValidRequest = verifyKey(
-    rawBodyString,
-    signature,
-    timestamp,
-    process.env.DISCORD_PUBLIC_KEY
+    rawBodyString, signature, timestamp, process.env.DISCORD_PUBLIC_KEY
   );
 
-  if (!isValidRequest) {
-    return res.status(401).send('Bad request signature');
-  }
+  if (!isValidRequest) return res.status(401).send('Bad request signature');
 
   const message = JSON.parse(rawBodyString);
 
-  // --- 2. HANDLE PING ---
+  // 2. Handle Ping
   if (message.type === InteractionType.PING) {
     return res.status(200).json({ type: InteractionResponseType.PONG });
   }
 
-  // --- 3. INIT FIREBASE ---
+  // 3. Init Firebase
   let db;
   let firebaseError = null;
-
   try {
     if (!admin.apps.length) {
-      // Langsung parse saja, karena format JSON di Vercel sudah benar
       const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT);
-      
-      admin.initializeApp({
-        credential: admin.credential.cert(serviceAccount)
-      });
+      admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
     }
     db = admin.firestore();
   } catch (e) {
-    console.error("🔥 Firebase Error:", e);
+    console.error("Firebase Error:", e);
     firebaseError = e.message;
   }
 
-  // --- 4. HANDLE COMMANDS ---
+  // 4. Handle Commands
   if (message.type === InteractionType.APPLICATION_COMMAND) {
-    // Jika Firebase Error, langsung lapor ke Discord
     if (firebaseError) {
         return res.status(200).json({
             type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            data: { content: `⚠️ **Sistem Error:** Gagal konek database.\nLog: \`${firebaseError}\`\n\n*Cek Variable FIREBASE_SERVICE_ACCOUNT di Vercel.*` }
+            data: { content: `⚠️ **Database Error**\n\`${firebaseError}\`` }
         });
     }
 
     const { name, options } = message.data;
+    const user = message.member.user;
 
     try {
-        // --- COMMAND: TEST PING (Tanpa DB) ---
+        // --- COMMAND: PING ---
         if (name === 'ping_bot') {
             return res.status(200).json({
                 type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-                data: { content: '🏓 **Pong!** Bot hidup dan siap melayani.' }
+                data: { content: '🏓 **Pong!** Sistem online.' }
             });
         }
 
-        // --- COMMAND: DAFTAR ---
+        // --- COMMAND: DAFTAR (Anti-Duplikat + Tampilan Baru) ---
         if (name === 'daftar') {
-          const nama = options.find(o => o.name === 'nama_panggilan').value;
-          const roblox = options.find(o => o.name === 'username_roblox').value.replace('@', '');
-          const userId = message.member.user.id;
+          // Ambil data (nama sudah diganti di setup.js)
+          const namaInput = options.find(o => o.name === 'nama').value;
+          const robloxInput = options.find(o => o.name === 'username_roblox').value.replace('@', '');
 
-          await db.collection('vd_participants').doc(userId).set({
-            discordId: userId,
-            nama: nama,
-            robloxUsername: roblox,
+          // Simpan ke DB (Pakai .set agar menimpa data lama = Anti Duplikat)
+          await db.collection('vd_participants').doc(user.id).set({
+            discordId: user.id,
+            nama: namaInput,
+            robloxUsername: robloxInput,
+            avatar: user.avatar,
             timestamp: admin.firestore.FieldValue.serverTimestamp()
           });
 
+          // Tampilan Elegant Minimalis
           return res.status(200).json({
             type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            data: { content: `✅ **Berhasil Daftar!**\nNama: ${nama}\nRoblox: @${roblox}` }
+            data: {
+                embeds: [{
+                    title: "PENDAFTARAN BERHASIL",
+                    description: "Data kamu telah diperbarui di database.",
+                    color: THEME_COLOR,
+                    thumbnail: { url: `https://cdn.discordapp.com/avatars/${user.id}/${user.avatar}.png` },
+                    fields: [
+                        { name: "Nama", value: `\`${namaInput}\``, inline: true },
+                        { name: "Roblox", value: `\`@${robloxInput}\``, inline: true }
+                    ],
+                    footer: { text: "Violence District Tournament" }
+                }]
+            }
           });
         }
 
-        // --- COMMAND: LIST PESERTA ---
+        // --- COMMAND: LIST PESERTA (Tampilan Modern Table) ---
         if (name === 'list_peserta') {
           const snap = await db.collection('vd_participants').orderBy('timestamp').get();
           
           if (snap.empty) {
             return res.status(200).json({
               type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-              data: { content: '*Belum ada peserta.*' }
+              data: { content: '*Belum ada peserta yang mendaftar.*' }
             });
           }
           
-          let listText = snap.docs.map((d, i) => {
-              const data = d.data();
-              const num = (i + 1).toString().padStart(2, '0');
-              return `${num}. [${data.nama}] [@${data.robloxUsername}]`;
-          }).join('\n');
+          // Format Tabel Rapi pakai Code Block
+          // Header
+          let table = "NO  NAMA            ROBLOX\n";
+          table += "--  --------------  --------------\n";
+          
+          snap.docs.forEach((doc, index) => {
+              const d = doc.data();
+              const no = (index + 1).toString().padStart(2, '0'); // 01, 02
+              // Potong nama kalau kepanjangan biar tabel rapi
+              const nama = d.nama.padEnd(14, ' ').substring(0, 14); 
+              const rblx = ("@" + d.robloxUsername).substring(0, 14);
+              
+              table += `${no}  ${nama}  ${rblx}\n`;
+          });
 
           return res.status(200).json({
             type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            data: { content: `**📋 LIST PESERTA (${snap.size})**\n\`\`\`ini\n${listText}\n\`\`\`` }
+            data: {
+                embeds: [{
+                    title: `DAFTAR PESERTA (${snap.size})`,
+                    description: `\`\`\`js\n${table}\n\`\`\``, // JS highlighting bikin warna abu/orange minimalis
+                    color: THEME_COLOR,
+                    footer: { text: "Menunggu peserta lain..." }
+                }]
+            }
           });
         }
 
-        // --- COMMAND: BUAT TIM ---
+        // --- COMMAND: BUAT TIM (Tampilan Grid) ---
         if (name === 'buat_tim') {
            const configSnap = await db.collection('vd_settings').doc('config').get();
            const min = configSnap.exists ? configSnap.data().minTeam : 4;
@@ -138,7 +161,7 @@ export default async function handler(req, res) {
            if (players.length < min) {
                return res.status(200).json({
                    type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-                   data: { content: `❌ Peserta kurang (Min: ${min}).` }
+                   data: { content: `⚠️ **Gagal Reroll:** Peserta kurang dari ${min}. Total saat ini: ${players.length}.` }
                });
            }
 
@@ -148,6 +171,7 @@ export default async function handler(req, res) {
                [players[i], players[j]] = [players[j], players[i]];
            }
 
+           // Logic Pembagian Tim
            let teams = [];
            let current = [];
            players.forEach(p => {
@@ -159,22 +183,59 @@ export default async function handler(req, res) {
            });
            if (current.length > 0) teams.push(current);
 
-           let output = `**🎲 HASIL REROLL TIM**\n`;
-           teams.forEach((t, i) => {
-               const members = t.map(p => `• ${p.nama} (@${p.robloxUsername})`).join('\n');
-               output += `\n**Tim #${i+1} (${t.length} Orang)**\n\`\`\`\n${members}\n\`\`\``;
+           // Build Embed Fields
+           const fields = teams.map((t, i) => {
+               const list = t.map(p => `• ${p.nama}`).join('\n');
+               return {
+                   name: `Tim ${i+1} (${t.length})`,
+                   value: `\`\`\`\n${list}\n\`\`\``,
+                   inline: true
+               };
            });
 
            return res.status(200).json({
                type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-               data: { content: output }
+               data: {
+                   embeds: [{
+                       title: "🎲 HASIL PEMBAGIAN TIM",
+                       description: `Total: ${players.length} Peserta | Mode: ${min}-${max} Player`,
+                       color: 0x5865F2, // Warna Blurple (Menonjol)
+                       fields: fields,
+                       timestamp: newDxate().toISOString()
+                   }]
+               }
            });
+        }
+        
+        // --- COMMAND: ATUR TIM ---
+        if (name === 'atur_tim') {
+            const min = options.find(o => o.name === 'min').value;
+            const max = options.find(o => o.name === 'max').value;
+            await db.collection('vd_settings').doc('config').set({ minTeam: min, maxTeam: max });
+            
+            return res.status(200).json({
+               type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+               data: { content: `⚙️ **Konfigurasi Disimpan:**\nMin: \`${min}\` | Max: \`${max}\`` }
+            });
+        }
+        
+        // --- COMMAND: RESET ---
+        if (name === 'reset_data') {
+            const snap = await db.collection('vd_participants').get();
+            const batch = db.batch();
+            snap.docs.forEach(doc => batch.delete(doc.ref));
+            await batch.commit();
+            
+            return res.status(200).json({
+               type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
+               data: { content: `🗑️ **Database Dibersihkan.** Siap untuk turnamen baru.` }
+            });
         }
 
     } catch (err) {
         return res.status(200).json({
             type: InteractionResponseType.CHANNEL_MESSAGE_WITH_SOURCE,
-            data: { content: `❌ **Error Logic:** ${err.message}` }
+            data: { content: `❌ Error: ${err.message}` }
         });
     }
   }
