@@ -1,33 +1,49 @@
-// api/setup.js
+import { InteractionResponseType, InteractionType, verifyKey } from 'discord-interactions';
+
 export default async function handler(req, res) {
+  // LIST COMMAND BARU
   const commands = [
     {
       name: 'daftar',
-      description: 'Daftar turnamen',
+      description: 'Daftar turnamen Violence District',
       options: [
-        { name: 'nama_panggilan', description: 'Nama', type: 3, required: true },
-        { name: 'username_roblox', description: 'Username Roblox', type: 3, required: true }
+        { 
+          name: 'nama', // SUDAH DIGANTI DARI nama_panggilan
+          description: 'Nama kamu', 
+          type: 3, 
+          required: true 
+        },
+        { 
+          name: 'username_roblox', 
+          description: 'Username Roblox', 
+          type: 3, 
+          required: true 
+        }
       ]
     },
     {
       name: 'list_peserta',
-      description: 'Lihat peserta'
+      description: 'Lihat daftar peserta yang terdaftar'
     },
     {
       name: 'buat_tim',
-      description: 'Acak tim'
+      description: 'Acak dan bagikan tim'
     },
     {
       name: 'atur_tim',
-      description: 'Atur jumlah tim (Admin)',
+      description: 'Admin: Atur konfigurasi tim',
       options: [
-        { name: 'min', description: 'Minimal', type: 4, required: true },
-        { name: 'max', description: 'Maksimal', type: 4, required: true }
+        { name: 'min', description: 'Minimal per tim', type: 4, required: true },
+        { name: 'max', description: 'Maksimal per tim', type: 4, required: true }
       ]
     },
     {
+      name: 'reset_data',
+      description: 'Admin: Hapus semua data peserta'
+    },
+    {
       name: 'ping_bot',
-      description: 'Cek apakah bot hidup (Tanpa Database)'
+      description: 'Cek status bot'
     }
   ];
 
@@ -45,7 +61,7 @@ export default async function handler(req, res) {
     );
     
     const data = await response.json();
-    return res.status(200).json({ status: 'Sukses mendaftarkan command!', data });
+    return res.status(200).json({ status: 'Command Updated!', data });
   } catch (e) {
     return res.status(500).json({ error: e.message });
   }
